@@ -20,6 +20,7 @@ Setup:
 """
 
 import os
+import time
 import smtplib
 import requests
 from datetime import datetime, timedelta
@@ -37,9 +38,17 @@ SEARCH_QUERIES = [
     "Android Developer Remote India",
 ]
 
-# JSearch experience filter. Options include:
-# "no_experience", "under_3_years_experience", "more_than_3_years_experience", "no_degree"
-EXPERIENCE_FILTER = "under_3_years_experience"
+# JSearch experience filter. Set to None to disable (recommended) - the API's
+# experience tagging is unreliable and combining it with a same-day date filter
+# can silently return zero results even when matching jobs exist.
+# Options if you want to re-enable it: "no_experience", "under_3_years_experience",
+# "more_than_3_years_experience", "no_degree"
+EXPERIENCE_FILTER = None
+
+# JSearch date bucket to query: "today", "3days", "week", "month".
+# Use "3days" for a safety margin - the script still filters precisely by
+# timestamp afterward via is_recent().
+DATE_POSTED_BUCKET = "3days"
 
 # How many result pages to pull per query (each page ~10 jobs). Keep low to save API quota.
 PAGES_PER_QUERY = 1
@@ -66,16 +75,23 @@ def fetch_jobs_for_query(query: str):
             "query": query,
             "page": str(page),
             "num_pages": "1",
-            "date_posted": "today",  # JSearch buckets: all, today, 3days, week, month
-            "job_requirements": EXPERIENCE_FILTER,
+            "date_posted": DATE_POSTED_BUCKET,
         }
+        if EXPERIENCE_FILTER:
+            params["job_requirements"] = EXPERIENCE_FILTER
+
         try:
             resp = requests.get(JSEARCH_URL, headers=HEADERS, params=params, timeout=30)
-            resp.raise_for_status()
-            data = resp.json()
-            all_jobs.extend(data.get("data", []))
+            if resp.status_code != 200:
+                print(f"Error fetching '{query}' page {page}: {resp.status_code} - {resp.text[:300]}")
+            else:
+                data = resp.json()
+                jobs = data.get("data", [])
+                print(f"  '{query}' page {page}: {len(jobs)} raw jobs returned by API")
+                all_jobs.extend(jobs)
         except requests.RequestException as e:
             print(f"Error fetching '{query}' page {page}: {e}")
+        time.sleep(2)  # avoid free-tier rate limits between calls
     return all_jobs
 
 
@@ -90,10 +106,18 @@ def is_recent(job: dict, days_back: int = 1) -> bool:
 
 
 def is_relevant_location(job: dict) -> bool:
-    """Keep jobs in India or fully remote."""
+    """Keep jobs in India or fully remote. Falls back to text match if country field is missing."""
     country = (job.get("job_country") or "").upper()
     is_remote = job.get("job_is_remote", False)
-    return country == "IN" or is_remote
+    if country == "IN" or is_remote:
+        return True
+    # Fallback: some listings leave job_country blank - check location text fields
+    text_blob = " ".join([
+        job.get("job_city") or "",
+        job.get("job_state") or "",
+        job.get("job_location") or "",
+    ]).lower()
+    return "india" in text_blob
 
 
 def dedupe(jobs: list) -> list:
@@ -163,10 +187,14 @@ def main():
         print(f"Searching: {query}")
         all_jobs.extend(fetch_jobs_for_query(query))
 
-    filtered = [j for j in all_jobs if is_recent(j) and is_relevant_location(j)]
-    unique_jobs = dedupe(filtered)
+    recent_jobs = [j for j in all_jobs if is_recent(j)]
+    location_matched = [j for j in recent_jobs if is_relevant_location(j)]
+    unique_jobs = dedupe(location_matched)
 
-    print(f"Total fetched: {len(all_jobs)} | After filtering+dedupe: {len(unique_jobs)}")
+    print(f"Total raw jobs fetched (all queries): {len(all_jobs)}")
+    print(f"After date/recency filter: {len(recent_jobs)}")
+    print(f"After India/Remote location filter: {len(location_matched)}")
+    print(f"After dedupe: {len(unique_jobs)}")
 
     html = build_email_html(unique_jobs)
     send_email(html)
