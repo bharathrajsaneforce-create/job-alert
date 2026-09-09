@@ -4,19 +4,6 @@ Daily Android Developer Job Alert
 Queries the JSearch API (RapidAPI) for jobs posted "yesterday" across India
 and Remote, matching Android/App/Mobile developer keywords, filtered for
 entry-level / ~1 year experience, then emails a formatted digest.
-
-Runs for free daily via GitHub Actions (see .github/workflows/daily-job-alert.yml).
-
-Setup:
-1. Get a RapidAPI key and subscribe to JSearch (free tier):
-   https://rapidapi.com/letscrape-6bRBa3QguO5/api/jsearch
-2. Create a Gmail "App Password" (Google Account > Security > 2-Step Verification
-   > App Passwords) - do NOT use your normal Gmail password.
-3. Set these as GitHub repo secrets (Settings > Secrets and variables > Actions):
-     RAPIDAPI_KEY
-     EMAIL_ADDRESS      (the Gmail address sending the email)
-     EMAIL_APP_PASSWORD (the app password from step 2)
-     TO_EMAIL           (where you want to receive the digest)
 """
 
 import os
@@ -27,9 +14,6 @@ from datetime import datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-# ---------------------- CONFIG: EDIT THIS SECTION ----------------------
-
-# Keywords to search for. Add/remove as you like.
 SEARCH_QUERIES = [
     "Android Developer in India",
     "App Developer in India",
@@ -38,22 +22,9 @@ SEARCH_QUERIES = [
     "Android Developer Remote India",
 ]
 
-# JSearch experience filter. Set to None to disable (recommended) - the API's
-# experience tagging is unreliable and combining it with a same-day date filter
-# can silently return zero results even when matching jobs exist.
-# Options if you want to re-enable it: "no_experience", "under_3_years_experience",
-# "more_than_3_years_experience", "no_degree"
 EXPERIENCE_FILTER = None
-
-# JSearch date bucket to query: "today", "3days", "week", "month".
-# Use "3days" for a safety margin - the script still filters precisely by
-# timestamp afterward via is_recent().
 DATE_POSTED_BUCKET = "3days"
-
-# How many result pages to pull per query (each page ~10 jobs). Keep low to save API quota.
 PAGES_PER_QUERY = 1
-
-# -------------------------------------------------------------------------
 
 RAPIDAPI_KEY = os.environ["RAPIDAPI_KEY"]
 EMAIL_ADDRESS = os.environ["EMAIL_ADDRESS"]
@@ -68,7 +39,6 @@ HEADERS = {
 
 
 def fetch_jobs_for_query(query: str):
-    """Call JSearch API for a single query, posted within the last day."""
     all_jobs = []
     for page in range(1, PAGES_PER_QUERY + 1):
         params = {
@@ -76,6 +46,7 @@ def fetch_jobs_for_query(query: str):
             "page": str(page),
             "num_pages": "1",
             "date_posted": DATE_POSTED_BUCKET,
+            "country": "in",
         }
         if EXPERIENCE_FILTER:
             params["job_requirements"] = EXPERIENCE_FILTER
@@ -86,32 +57,40 @@ def fetch_jobs_for_query(query: str):
                 print(f"Error fetching '{query}' page {page}: {resp.status_code} - {resp.text[:300]}")
             else:
                 data = resp.json()
-                jobs = data.get("data", [])
+                jobs = data.get("data", {}).get("jobs", [])
                 print(f"  '{query}' page {page}: {len(jobs)} raw jobs returned by API")
                 all_jobs.extend(jobs)
         except requests.RequestException as e:
             print(f"Error fetching '{query}' page {page}: {e}")
-        time.sleep(2)  # avoid free-tier rate limits between calls
+        time.sleep(2)
     return all_jobs
 
 
+RELEVANT_TITLE_KEYWORDS = [
+    "android", "kotlin", "mobile app", "mobile application", "app developer",
+    "app development", "flutter", "react native", "ios developer",
+]
+
+
+def is_relevant_title(job: dict) -> bool:
+    title = (job.get("job_title") or "").lower()
+    return any(keyword in title for keyword in RELEVANT_TITLE_KEYWORDS)
+
+
 def is_recent(job: dict, days_back: int = 1) -> bool:
-    """Keep jobs posted within the last `days_back` days (yesterday + today's overlap)."""
     posted_ts = job.get("job_posted_at_timestamp")
     if not posted_ts:
-        return True  # keep if unknown rather than silently drop
+        return True
     posted_dt = datetime.utcfromtimestamp(posted_ts)
     cutoff = datetime.utcnow() - timedelta(days=days_back + 1)
     return posted_dt >= cutoff
 
 
 def is_relevant_location(job: dict) -> bool:
-    """Keep jobs in India or fully remote. Falls back to text match if country field is missing."""
     country = (job.get("job_country") or "").upper()
     is_remote = job.get("job_is_remote", False)
     if country == "IN" or is_remote:
         return True
-    # Fallback: some listings leave job_country blank - check location text fields
     text_blob = " ".join([
         job.get("job_city") or "",
         job.get("job_state") or "",
@@ -189,11 +168,13 @@ def main():
 
     recent_jobs = [j for j in all_jobs if is_recent(j)]
     location_matched = [j for j in recent_jobs if is_relevant_location(j)]
-    unique_jobs = dedupe(location_matched)
+    title_matched = [j for j in location_matched if is_relevant_title(j)]
+    unique_jobs = dedupe(title_matched)
 
     print(f"Total raw jobs fetched (all queries): {len(all_jobs)}")
     print(f"After date/recency filter: {len(recent_jobs)}")
     print(f"After India/Remote location filter: {len(location_matched)}")
+    print(f"After title-relevance filter: {len(title_matched)}")
     print(f"After dedupe: {len(unique_jobs)}")
 
     html = build_email_html(unique_jobs)
