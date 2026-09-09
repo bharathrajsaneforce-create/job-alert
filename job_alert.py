@@ -1,6 +1,7 @@
 """
 Daily Android Developer Job Alert
 ----------------------------------
+
 Queries the JSearch API (RapidAPI) for jobs posted "yesterday" across India
 and Remote, matching Android/App/Mobile developer keywords, filtered for
 entry-level / ~1 year experience, then emails a formatted digest.
