@@ -76,6 +76,7 @@ def fetch_jobs_for_query(query: str):
             "page": str(page),
             "num_pages": "1",
             "date_posted": DATE_POSTED_BUCKET,
+            "country": "in",  # REQUIRED - without this the API defaults to US jobs
         }
         if EXPERIENCE_FILTER:
             params["job_requirements"] = EXPERIENCE_FILTER
@@ -86,13 +87,27 @@ def fetch_jobs_for_query(query: str):
                 print(f"Error fetching '{query}' page {page}: {resp.status_code} - {resp.text[:300]}")
             else:
                 data = resp.json()
-                jobs = data.get("data", [])
+                # Jobs are nested under data.jobs, NOT data directly
+                jobs = data.get("data", {}).get("jobs", [])
                 print(f"  '{query}' page {page}: {len(jobs)} raw jobs returned by API")
                 all_jobs.extend(jobs)
         except requests.RequestException as e:
             print(f"Error fetching '{query}' page {page}: {e}")
         time.sleep(2)  # avoid free-tier rate limits between calls
     return all_jobs
+
+
+RELEVANT_TITLE_KEYWORDS = [
+    "android", "kotlin", "mobile app", "mobile application", "app developer",
+    "app development", "flutter", "react native", "ios developer",
+]
+
+
+def is_relevant_title(job: dict) -> bool:
+    """Extra safety net: only keep jobs whose title actually matches our field,
+    since the API's own query matching can loosely return unrelated roles."""
+    title = (job.get("job_title") or "").lower()
+    return any(keyword in title for keyword in RELEVANT_TITLE_KEYWORDS)
 
 
 def is_recent(job: dict, days_back: int = 1) -> bool:
@@ -189,11 +204,13 @@ def main():
 
     recent_jobs = [j for j in all_jobs if is_recent(j)]
     location_matched = [j for j in recent_jobs if is_relevant_location(j)]
-    unique_jobs = dedupe(location_matched)
+    title_matched = [j for j in location_matched if is_relevant_title(j)]
+    unique_jobs = dedupe(title_matched)
 
     print(f"Total raw jobs fetched (all queries): {len(all_jobs)}")
     print(f"After date/recency filter: {len(recent_jobs)}")
     print(f"After India/Remote location filter: {len(location_matched)}")
+    print(f"After title-relevance filter: {len(title_matched)}")
     print(f"After dedupe: {len(unique_jobs)}")
 
     html = build_email_html(unique_jobs)
