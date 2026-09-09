@@ -1,0 +1,30 @@
+name: Daily Android Job Alert
+
+on:
+  schedule:
+    # Runs at 03:00 UTC = 08:30 AM IST every day
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}   # lets you manually trigger a run from the Actions tab to test
+
+jobs:
+  send-job-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install requests
+
+      - name: Run job alert script
+        env:
+          RAPIDAPI_KEY: ${{ secrets.RAPIDAPI_KEY }}
+          EMAIL_ADDRESS: ${{ secrets.EMAIL_ADDRESS }}
+          EMAIL_APP_PASSWORD: ${{ secrets.EMAIL_APP_PASSWORD }}
+          TO_EMAIL: ${{ secrets.TO_EMAIL }}
+        run: python job_alert.py
